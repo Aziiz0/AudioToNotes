@@ -89,20 +89,6 @@ def get_duration(file):
         # Log the error and return an error message or handle the error as required
         logging.error(error)
         raise Exception(f"An error occurred while processing the audio file: {str(error)}")
-"""
-def create_transcription(file):
-    # Remove the .mp3 from the filename and add -transcript.txt
-    txt_filename = f"{file[:-4]}-transcript.txt"
-    if not os.path.isfile(txt_filename):
-        with open(file, "rb") as audio_file:
-            transcription = openai.Audio.transcribe("whisper-1", audio_file)
-            with open(txt_filename, 'w') as txt_file:
-                txt_file.write(transcription.text)
-                return transcription.text
-    else:
-        with open(txt_filename, "r") as txt_file:
-            return txt_file.read()
-"""
 
 def transcribe_audio(file_path):
     def check_if_transcript_exists(file_path):
@@ -133,14 +119,14 @@ def transcribe_audio(file_path):
 
     return result["text"]
 
-def openai_chat(transcript, file_path):
+def openai_chat(transcript, file_path, model):
     def calculate_token_size(text):
         tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
         tokens = tokenizer.encode(text)
         return len(tokens)
     
     def format_chat(result, total_tokens):
-        def clean_gpt3_output(gpt3_output):
+        def clean_gpt_output(gpt_output):
             def remove_trailing_commas(json_string):
                 regex = r",\s*(?=])"
                 return re.sub(regex, '', json_string)
@@ -153,7 +139,7 @@ def openai_chat(transcript, file_path):
                     print(f"Cleaned JSON string:\n {json_string}")
                     return {}
             
-            return parse_json(remove_trailing_commas(gpt3_output))
+            return parse_json(remove_trailing_commas(gpt_output))
 
         def array_sum(arr):
             return sum(arr)
@@ -170,7 +156,7 @@ def openai_chat(transcript, file_path):
                 .replace("\\", "\\\\") \
                 .replace("\\\\\\\\", "\\\\")
 
-            json_obj = clean_gpt3_output(json_string)
+            json_obj = clean_gpt_output(json_string)
             
             response = {
                 'choice': json_obj,
@@ -179,8 +165,6 @@ def openai_chat(transcript, file_path):
             usageNum += 1
             results_array.append(response)
             
-            
-        
         chat_response = {
             'title': [],
             'summary': [],
@@ -235,7 +219,9 @@ def openai_chat(transcript, file_path):
             return json.load(summary_file)
     
     # max tokens
-    max_tokens = 4000
+    max_tokens_3_5 = 4000
+    max_tokens_4 = 8000
+    max_tokens_4_32k = 32000
     max_responses = 4
     
     system_message = """
@@ -307,7 +293,6 @@ def openai_chat(transcript, file_path):
 
         return chunks
 
-
     def split_transcript(system_message, user_message, transcript, max_tokens):
         # Calculate tokens used by the system and user message
         system_message_tokens = calculate_token_size(system_message)
@@ -325,8 +310,8 @@ def openai_chat(transcript, file_path):
             itter += 1'''
 
         return strings_array
-    
-    def send_to_chat(strings_array):
+
+    def send_to_chat(strings_array, models):
         total_tokens = 0
         results_array = []
         index = 1
@@ -341,7 +326,7 @@ def openai_chat(transcript, file_path):
             while retries > 0:
                 try:
                     completion = openai.ChatCompletion.create(
-                        model="gpt-3.5-turbo",
+                        model=models,
                         messages= [ {"role": "system", "content": system_message}, {"role": "user", "content": prompt} ],
                         temperature=0.2,
                     )
@@ -361,16 +346,29 @@ def openai_chat(transcript, file_path):
                     if retries == 0:
                         print("Failed to get a response from OpenAI Chat API after 3 attempts.\n Lowering MAX_TOKEN by 500.")
                         return results_array, 0, total_tokens
-                    print("OpenAI Chat API returned an error. Retrying...")
+                    print(f"OpenAI Chat API returned an error: {str(e)}. Retrying...")
             index += 1
         return results_array, 1, total_tokens
     
     gotResponses = 0
     while gotResponses == 0:
-        strings_array = split_transcript(system_message, user_message, transcript, max_tokens)
-        result, gotResponses, total_tokens = send_to_chat(strings_array)
-        if gotResponses == 0:
-            max_tokens = max_tokens - 500
+        if model == 'gpt-3.5-turbo':
+            strings_array = split_transcript(system_message, user_message, transcript, max_tokens_3_5)
+            result, gotResponses, total_tokens = send_to_chat(strings_array, model)
+            if gotResponses == 0:
+                max_tokens_3_5 = max_tokens_3_5 - 500
+        elif model == 'gpt-4':
+            strings_array = split_transcript(system_message, user_message, transcript, max_tokens_4)
+            result, gotResponses, total_tokens = send_to_chat(strings_array, model)
+            if gotResponses == 0:
+                max_tokens_4 = max_tokens_4 - 500
+        elif model == 'gpt-4-32k':
+            strings_array = split_transcript(system_message, user_message, transcript, max_tokens_4_32k)
+            result, gotResponses, total_tokens = send_to_chat(strings_array, model)
+            if gotResponses == 0:
+                max_tokens_4_32k = max_tokens_4_32k - 500
+        else:
+            raise ValueError(f'Unsupported model: {model}')
     json_array = format_chat(result, total_tokens)
 
     with open(summary_file_path, 'w') as summary_file:
@@ -458,7 +456,7 @@ def make_paragraphs(transcript, summary):
 
     return all_paragraphs
 
-def to_notion(result, all_paragraphs, file):
+def to_notion(result, all_paragraphs, file, model):
     # Initialize a new Notion client
     notion = Client(auth=notion_token)
 
@@ -466,12 +464,23 @@ def to_notion(result, all_paragraphs, file):
     dbID = db_id
     
     # Your title to check
-    file_name = os.path.splitext(file)[0].split("\\")[-1].split('L')[1]
+    split_path = os.path.splitext(file)[0].split("\\")[-1]
+    if 'L' in split_path:
+        file_name = split_path.split('L')[1]
+    else:
+        print(f"Unexpected filename format: {split_path}")
+        file_name = input("Please enter a numer for the file: ")
     result['name'] = file_name
     
     # Current OpenAPI pricing (whisper is per-minute, gpt is per 1k tokens)
+    if model == 'gpt-3.5-turbo':
+        gptRate = 0.002
+    elif model == 'gpt-4':
+        gptRate = 0.03
+    elif model == 'gpt-4-32k':
+        gptRate = 0.06
     whisperRate = 0
-    gptTurboRate = 0.002
+    
 
     # Get the file duration
     duration = get_duration(file)
@@ -496,7 +505,7 @@ def to_notion(result, all_paragraphs, file):
     # Add cost values
     transcriptionCost = (duration / 60) * whisperRate
     meta['transcription-cost'] = f"Transcription Cost: ${transcriptionCost:.3f}"
-    chatCost = (meta['tokens'] / 1000) * gptTurboRate
+    chatCost = (meta['tokens'] / 1000) * gptRate
     meta['chat-cost'] = f"Chat API Cost: ${chatCost:.3f}"
     totalCost = transcriptionCost + chatCost
     meta['total-cost'] = f"Total Cost: ${totalCost:.3f}"
@@ -814,48 +823,121 @@ openai.api_key = os.environ.get('OpenAi_API_Key')
 notion_token = os.environ.get('NOTION_TOKEN')
 db_id = os.environ.get('NOTION_DATABASE_ID')
 
-# Create array of all mp4 files
-mp4_files = glob.glob('*.mp4')
+def check_environment_variables():
+    if not openai.api_key:
+        print("OpenAI API Key is not set.")
+        print("Please set it by adding the following line to your environment:")
+        print("export OpenAi_API_Key='your_openai_api_key'")
+    if not notion_token:
+        print("Notion Token is not set.")
+        print("Please set it by adding the following line to your environment:")
+        print("export NOTION_TOKEN='your_notion_token'")
+    if not db_id:
+        print("Notion Database ID is not set.")
+        print("Please set it by adding the following line to your environment:")
+        print("export NOTION_DATABASE_ID='your_notion_database_id'")
+    if not openai.api_key or not notion_token or not db_id:
+        print("Please restart the program after setting the environment variables.")
+        exit()
 
-# Convert mp4 to wav
-for file in mp4_files:
-    wav_file_path = convert_and_process_mp4_to_wav(file)
-
-# Create array of all wav files
-wav_files = glob.glob('wav\*.wav')
-
-# Makes notesInNotion.txt if not already there
-if not os.path.exists('wav/notesInNotion.txt'):
-    with open('wav/notesInNotion.txt', 'w') as f:
-        pass
-
-for file in wav_files:
-    text_name = os.path.splitext(file)[0].split("\\")[-1].split('L')[1]
-    print(f"Beginning NOTE #{text_name}")
-    
-    # Get Transcript
-    print("Getting transcription...")
-    transcription = transcribe_audio(file)
-    #input("Press Enter to summarize transcript...")
-
-    # Get a summarization of Transcript
-    print("Summarizing transcription...")
-    result = openai_chat(transcription, file)
-    all_paragraphs = make_paragraphs(transcription, result['summary'])
-    #result = local_summarize_text(transcription, file)
-    #input("Press Enter to send to Notion...")
-    
-    with open('wav/notesInNotion.txt', 'a+') as notionFile:
-        notionFile.seek(0)  # move the file pointer to the beginning of the file
-        contents = notionFile.read()
-        if text_name in contents:
-            print(f"{text_name} is already in Notion.")
+def choose_model():
+    print("\nChoose a model:")
+    print("1. gpt-3.5-turbo")
+    print("2. gpt-4")
+    print("3. gpt-4-32k (NOT WORKING)")
+    while True:
+        choice = input("Enter your choice: ")
+        if choice == '1':
+            return 'gpt-3.5-turbo'
+        elif choice == '2':
+            return 'gpt-4'
+        elif choice == '3':
+            return 'gpt-4-32k'
         else:
-            print("Setting Notion up...")
-            responseHolder = to_notion(result, all_paragraphs, file)
-            #input("Press Enter to update Notion...")
-            allAPIResponses = update_notion(responseHolder)
-            notionFile.write(text_name + '\n')
-    
-    print(f"Finished with NOTE #{text_name}")
-    #input("Press Enter to continue...")
+            print("Invalid choice. Please enter 1, 2, or 3.")
+
+def start_translation():
+    # Choose the model
+    model = choose_model()
+
+    # Create array of all mp4 files
+    mp4_files = glob.glob('*.mp4')
+
+    # Convert mp4 to wav
+    for file in mp4_files:
+        wav_file_path = convert_and_process_mp4_to_wav(file)
+
+    # Create array of all wav files
+    wav_files = glob.glob('wav\*.wav')
+
+    # Makes 'wav' directory if not already there
+    if not os.path.exists('wav'):
+        os.makedirs('wav')
+
+    # Makes notesInNotion.txt if not already there
+    if not os.path.exists('wav/notesInNotion.txt'):
+        with open('wav/notesInNotion.txt', 'w') as f:
+            pass
+
+    for file in wav_files:
+        file_name = os.path.splitext(file)[0].split("\\")[-1]
+        if 'L' in file_name:
+            text_name = file_name.split('L')[1]
+        else:
+            text_name = file_name  # or some other default value
+        print(f"Beginning NOTE #{text_name}")
+        
+        # Get Transcript
+        print("Getting transcription...")
+        transcription = transcribe_audio(file)
+        #input("Press Enter to summarize transcript...")
+
+        # Get a summarization of Transcript
+        print("Summarizing transcription...")
+        result = openai_chat(transcription, file, model)  # pass the model here
+        all_paragraphs = make_paragraphs(transcription, result['summary'])
+        #result = local_summarize_text(transcription, file)
+        #input("Press Enter to send to Notion...")
+        
+        with open('wav/notesInNotion.txt', 'a+') as notionFile:
+            notionFile.seek(0)  # move the file pointer to the beginning of the file
+            contents = notionFile.read()
+            if text_name in contents:
+                print(f"{text_name} is already in Notion.")
+            else:
+                print("Setting Notion up...")
+                responseHolder = to_notion(result, all_paragraphs, file, model)
+                #input("Press Enter to update Notion...")
+                allAPIResponses = update_notion(responseHolder)
+                notionFile.write(text_name + '\n')
+        
+        print(f"Finished with NOTE #{text_name}")
+        #input("Press Enter to continue...")
+
+def show_instructions():
+    print("Instructions:")
+    print("1. Place your .mp4 files in the same directory as this script.")
+    print("2. The script will convert .mp4 files to .wav, generate transcripts and summaries, and upload them to Notion.")
+    print("3. The summaries will be stored in a file 'notesInNotion.txt' in the 'wav' directory.")
+    print("4. Make sure you have set your OpenAi_API_Key, NOTION_TOKEN, and NOTION_DATABASE_ID as environment variables.")
+
+def menu():
+    check_environment_variables()
+
+    while True:
+        print("\nMenu:")
+        print("1. Start translation")
+        print("2. Show instructions")
+        print("3. Exit")
+        choice = input("Enter your choice: ")
+        if choice == '1':
+            start_translation()
+        elif choice == '2':
+            show_instructions()
+        elif choice == '3':
+            break
+        else:
+            print("Invalid choice. Please enter 1, 2, or 3.")
+
+# Start the menu
+menu()

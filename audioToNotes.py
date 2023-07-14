@@ -220,6 +220,7 @@ def openai_chat(transcript, file_path, model):
     
     # max tokens
     max_tokens_3_5 = 4000
+    max_tokens_3_5_16k = 16000
     max_tokens_4 = 8000
     max_tokens_4_32k = 32000
     max_responses = 4
@@ -357,6 +358,11 @@ def openai_chat(transcript, file_path, model):
             result, gotResponses, total_tokens = send_to_chat(strings_array, model)
             if gotResponses == 0:
                 max_tokens_3_5 = max_tokens_3_5 - 500
+        elif model == 'gpt-3.5-turbo-16k':
+            strings_array = split_transcript(system_message, user_message, transcript, max_tokens_3_5_16k)
+            result, gotResponses, total_tokens = send_to_chat(strings_array, model)
+            if gotResponses == 0:
+                max_tokens_3_5_16k = max_tokens_3_5_16k - 500
         elif model == 'gpt-4':
             strings_array = split_transcript(system_message, user_message, transcript, max_tokens_4)
             result, gotResponses, total_tokens = send_to_chat(strings_array, model)
@@ -474,11 +480,21 @@ def to_notion(result, all_paragraphs, file, model):
     
     # Current OpenAPI pricing (whisper is per-minute, gpt is per 1k tokens)
     if model == 'gpt-3.5-turbo':
-        gptRate = 0.002
+        gptRateIn = 0.0015
+        gptRateOut = 0.002
+    elif model == 'gpt-3.5-turbo-16k':
+        gptRateIn = 0.003
+        gptRateOut = 0.004
     elif model == 'gpt-4':
-        gptRate = 0.03
+        gptRateIn = 0.03
+        gptRateOut = 0.06
     elif model == 'gpt-4-32k':
-        gptRate = 0.06
+        gptRateIn = 0.06
+        gptRateOut = 0.12
+    else:
+        gptRateIn = 0
+        gptRateOut = 0
+    gptRate = (gptRateIn + gptRateOut)/2
     whisperRate = 0
     
 
@@ -843,18 +859,21 @@ def check_environment_variables():
 def choose_model():
     print("\nChoose a model:")
     print("1. gpt-3.5-turbo")
-    print("2. gpt-4")
-    print("3. gpt-4-32k (NOT WORKING)")
+    print("2. gpt-3.5-turbo-16k")
+    print("3. gpt-4")
+    print("4. gpt-4-32k (NOT WORKING)")
     while True:
         choice = input("Enter your choice: ")
         if choice == '1':
             return 'gpt-3.5-turbo'
         elif choice == '2':
-            return 'gpt-4'
+            return 'gpt-3.5-turbo-16k'
         elif choice == '3':
+            return 'gpt-4'
+        elif choice == '4':
             return 'gpt-4-32k'
         else:
-            print("Invalid choice. Please enter 1, 2, or 3.")
+            print("Invalid choice. Please enter 1, 2, 3, or 4.")
 
 def start_translation():
     # Choose the model
